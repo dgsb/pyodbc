@@ -178,7 +178,8 @@ static bool GetBytesInfo(Cursor* cur, Py_ssize_t index, PyObject* param, ParamIn
     return true;
 }
 
-static bool GetUnicodeInfo(Cursor* cur, Py_ssize_t index, PyObject* param, ParamInfo& info)
+
+static bool GetUnicodeInfoW(Cursor* cur, Py_ssize_t index, PyObject* param, ParamInfo& info)
 {
     Py_UNICODE* pch = PyUnicode_AsUnicode(param);
     Py_ssize_t  len = PyUnicode_GET_SIZE(param);
@@ -222,6 +223,50 @@ static bool GetUnicodeInfo(Cursor* cur, Py_ssize_t index, PyObject* param, Param
 
     return true;
 }
+
+
+static bool GetUnicodeInfoA(Cursor      * cur,
+                            Py_ssize_t    index,
+                            PyObject    * param,
+                            ParamInfo   & info)
+{
+    char        * utf8_str;
+    Py_ssize_t    sz;
+
+    utf8_str = PyUnicode_AsUTF8AndSize(param, &sz);
+
+    info.ValueType  = SQL_C_CHAR;
+    info.ColumnSize = (SQLUINTEGER)max(sz, 1);
+
+    if (sz <= cur->cnxn->varchar_maxlength)
+    {
+        info.ParameterValuePtr = utf8_str;
+        info.ParameterType = SQL_VARCHAR;
+        info.StrLen_or_Ind = sz;
+    }
+    else
+    {
+        info.ParameterType     = SQL_LONGVARCHAR;
+        info.StrLen_or_Ind     = cur->cnxn->need_long_data_len ? SQL_LEN_DATA_AT_EXEC(sz) : SQL_DATA_AT_EXEC;
+        info.ParameterValuePtr = param;
+    }
+
+    return true;
+}
+
+
+static bool GetUnicodeInfo(Cursor       * cur,
+                           Py_ssize_t     index,
+                           PyObject     * param,
+                           ParamInfo    & info)
+{
+    if (!cur->cnxn->use_ascii_api) {
+        return GetUnicodeInfoW(cur, index, param, info);
+    } else {
+        return GetUnicodeInfoA(cur, index, param, info);
+    }
+}
+
 
 static bool GetBooleanInfo(Cursor* cur, Py_ssize_t index, PyObject* param, ParamInfo& info)
 {
@@ -599,7 +644,16 @@ bool BindParameter(Cursor* cur, Py_ssize_t index, ParamInfo& info)
 
     SQLRETURN ret = -1;
     Py_BEGIN_ALLOW_THREADS
-    ret = SQLBindParameter(cur->hstmt, (SQLUSMALLINT)(index + 1), SQL_PARAM_INPUT, info.ValueType, info.ParameterType, info.ColumnSize, info.DecimalDigits, info.ParameterValuePtr, info.BufferLength, &info.StrLen_or_Ind);
+    ret = SQLBindParameter(cur->hstmt,
+                           (SQLUSMALLINT)(index + 1),
+                           SQL_PARAM_INPUT,
+                           info.ValueType,
+                           info.ParameterType,
+                           info.ColumnSize,
+                           info.DecimalDigits,
+                           info.ParameterValuePtr,
+                           info.BufferLength,
+                           &info.StrLen_or_Ind);
     Py_END_ALLOW_THREADS;
 
     if (GetConnection(cur)->hdbc == SQL_NULL_HANDLE)
@@ -684,9 +738,15 @@ bool PrepareAndBind(Cursor* cur, PyObject* pSql, PyObject* original_params, bool
 
         if (PyUnicode_Check(pSql))
         {
-            SQLWChar sql(pSql);
             Py_BEGIN_ALLOW_THREADS
-            ret = SQLPrepareW(cur->hstmt, sql.get(), SQL_NTS);
+            if (!cur->cnxn->use_ascii_api) {
+                SQLWChar sql(pSql);
+                ret = SQLPrepareW(cur->hstmt, sql.get(), SQL_NTS);
+            } else {
+                char * utf8_request;
+                utf8_request = PyBytes_AsString(PyUnicode_AsUTF8String(pSql));
+                ret = SQLPrepare(cur->hstmt, (SQLCHAR*) utf8_request, SQL_NTS);
+            }
             if (SQL_SUCCEEDED(ret))
             {
                 szErrorFunc = "SQLNumParams";

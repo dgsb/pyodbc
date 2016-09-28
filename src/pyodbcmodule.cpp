@@ -286,6 +286,7 @@ static PyObject* mod_connect(PyObject* self, PyObject* args, PyObject* kwargs)
     int fAnsi = 0;              // force ansi
     int fUnicodeResults = 0;
     int fReadOnly = 0;
+    int fAsciiApi = 0;
     long timeout = 0;
 
     Object attrs_before; // Optional connect attrs set before connecting
@@ -360,6 +361,11 @@ static PyObject* mod_connect(PyObject* self, PyObject* args, PyObject* kwargs)
                 fReadOnly = PyObject_IsTrue(value);
                 continue;
             }
+            if (Text_EqualsI(key, "ascii_api"))
+            {
+                fAsciiApi = PyObject_IsTrue(value);
+                continue;
+            }
             if (Text_EqualsI(key, "attrs_before"))
             {
                 attrs_before = _CheckAttrsDict(value);
@@ -413,7 +419,7 @@ static PyObject* mod_connect(PyObject* self, PyObject* args, PyObject* kwargs)
     }
 
     return (PyObject*)Connection_New(pConnectString.Get(), fAutoCommit != 0, fAnsi != 0, fUnicodeResults != 0, timeout,
-                                     fReadOnly != 0, attrs_before);
+                                     fReadOnly != 0, fAsciiApi != 0, attrs_before);
 }
 
 static PyObject* mod_datasources(PyObject* self)
@@ -517,7 +523,7 @@ static PyObject* mod_getdecimalsep(PyObject* self)
 }
 
 static char connect_doc[] =
-    "connect(str, autocommit=False, ansi=False, timeout=0, **kwargs) --> Connection\n"
+    "connect(str, autocommit=False, ansi=False, ascii_api=False, timeout=0, **kwargs) --> Connection\n"
     "\n"
     "Accepts an ODBC connection string and returns a new Connection object.\n"
     "\n"
@@ -566,6 +572,13 @@ static char connect_doc[] =
     "    drivers that return the wrong SQLSTATE (or if pyodbc is out of date and\n"
     "    should support other SQLSTATEs).\n"
     "   \n"
+    "  ascii_api\n"
+    "    There are two type of ODBC API, one is based on 2-bytes characters for string\n"
+    "    the other one is based on char* for string. Regarding what is done by some\n"
+    "    It seems there are some confusions regarding the encoding (utf-8, utf-16,\n"
+    "    ansii code page) and which api to use.\n"
+    "    This parameter when set to True allows to force the use the non-wide character\n"
+    "    API\n"
     "  timeout\n"
     "    An integer login timeout in seconds, used to set the SQL_ATTR_LOGIN_TIMEOUT\n"
     "    attribute of the connection.  The default is 0 which means the database's\n"

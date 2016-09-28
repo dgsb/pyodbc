@@ -140,7 +140,9 @@ static bool Connect(PyObject* pConnectString, HDBC hdbc, bool fAnsi, long timeou
 }
 
 
-PyObject* Connection_New(PyObject* pConnectString, bool fAutoCommit, bool fAnsi, bool fUnicodeResults, long timeout, bool fReadOnly,
+PyObject* Connection_New(PyObject* pConnectString, bool fAutoCommit,
+                         bool fAnsi, bool fUnicodeResults, long timeout,
+                         bool fReadOnly, bool fAsciiApi,
                          PyObject* attrs_before)
 {
     // pConnectString
@@ -240,6 +242,7 @@ PyObject* Connection_New(PyObject* pConnectString, bool fAutoCommit, bool fAnsi,
 #if PY_MAJOR_VERSION < 3
     cnxn->unicode_results = fUnicodeResults;
 #endif
+    cnxn->use_ascii_api   = fAsciiApi;
     cnxn->conv_count      = 0;
     cnxn->conv_types      = 0;
     cnxn->conv_funcs      = 0;

@@ -684,22 +684,32 @@ static PyObject* execute(Cursor* cur, PyObject* pSql, PyObject* params, bool ski
         cur->pPreparedSQL = 0;
 
         szLastFunction = "SQLExecDirect";
+        if (
 #if PY_MAJOR_VERSION < 3
-        if (PyString_Check(pSql))
+            PyString_Check(pSql) ||
+#endif
+            cur->cnxn->use_ascii_api
+           )
         {
-            Py_BEGIN_ALLOW_THREADS
-            ret = SQLExecDirect(cur->hstmt, (SQLCHAR*)PyString_AS_STRING(pSql), SQL_NTS);
-            Py_END_ALLOW_THREADS
+          Py_BEGIN_ALLOW_THREADS
+          char  * utf8_request;
+#if PY_MAJOR_VERSION < 3
+          utf8_request = PyString_AS_STRING(pSql);
+#else
+          utf8_request = PyBytes_AsString(PyUnicode_AsUTF8String(pSql));
+#endif
+          printf("%s\n", utf8_request);
+          ret = SQLExecDirect(cur->hstmt, (SQLCHAR*) utf8_request, SQL_NTS);
+          Py_END_ALLOW_THREADS
         }
         else
-#endif
         {
-            SQLWChar query(pSql);
-            if (!query)
-                return 0;
-            Py_BEGIN_ALLOW_THREADS
-            ret = SQLExecDirectW(cur->hstmt, query.get(), SQL_NTS);
-            Py_END_ALLOW_THREADS
+          SQLWChar query(pSql);
+          if (!query)
+            return 0;
+          Py_BEGIN_ALLOW_THREADS
+                  ret = SQLExecDirectW(cur->hstmt, query.get(), SQL_NTS);
+          Py_END_ALLOW_THREADS
         }
     }
 

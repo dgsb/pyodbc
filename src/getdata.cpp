@@ -50,11 +50,12 @@ private:
     int element_size;           // How wide is each character: ASCII/ANSI -> 1, Unicode -> 2 or 4, binary -> 1
 
     bool usingStack;            // Is buffer pointing to the initial stack buffer?
+    bool utf8_char;             // Are the SQL_C_CHAR utf8 type ?
 
 public:
     int null_size;              // How much room, in bytes, to add for null terminator: binary -> 0, other -> same as a element_size
 
-    DataBuffer(SQLSMALLINT dataType, char* stackBuffer, SQLLEN stackBufferSize)
+    DataBuffer(SQLSMALLINT dataType, char* stackBuffer, SQLLEN stackBufferSize, bool _utf8_char = false)
     {
         // dataType
         //   The type of data we will be reading: SQL_C_CHAR, SQL_C_WCHAR, or SQL_C_BINARY.
@@ -67,6 +68,7 @@ public:
         buffer        = stackBuffer;
         bufferSize    = stackBufferSize;
         usingStack    = true;
+        utf8_char     = _utf8_char;
         bufferOwner   = 0;
         bytesUsed     = 0;
     }
@@ -123,10 +125,15 @@ public:
 
             char* stackBuffer = buffer;
 
-            if (dataType == SQL_C_CHAR)
+            if (dataType == SQL_C_CHAR && !utf8_char)
             {
                 bufferOwner = PyBytes_FromStringAndSize(0, newSize);
                 buffer      = bufferOwner ? PyBytes_AS_STRING(bufferOwner) : 0;
+            }
+            else if (dataType == SQL_C_CHAR && utf8_char)
+            {
+                bufferOwner = PyUnicode_FromStringAndSize(0, newSize);
+                buffer      = PyUnicode_DATA(bufferOwner);
             }
             else if (dataType == SQL_C_BINARY)
             {
@@ -203,8 +210,10 @@ public:
 
         if (usingStack)
         {
-            if (dataType == SQL_C_CHAR)
+            if (dataType == SQL_C_CHAR && !utf8_char)
                 return PyBytes_FromStringAndSize(buffer, bytesUsed);
+            else if (dataType == SQL_C_CHAR && utf8_char)
+                return PyUnicode_FromStringAndSize(buffer, bytesUsed);
 
             if (dataType == SQL_C_BINARY)
             {
@@ -302,14 +311,16 @@ static PyObject* GetDataString(Cursor* cur, Py_ssize_t iCol)
     case SQL_LONGVARCHAR:
     case SQL_GUID:
     case SQL_SS_XML:
+        if (
 #if PY_MAJOR_VERSION < 3
-        if (cur->cnxn->unicode_results)
+            cur->cnxn->unicode_results ||
+#else
+            !cur->cnxn->use_ascii_api
+#endif
+           )
             nTargetType  = SQL_C_WCHAR;
         else
             nTargetType  = SQL_C_CHAR;
-#else
-        nTargetType  = SQL_C_WCHAR;
-#endif
 
         break;
 
@@ -443,7 +454,7 @@ static PyObject* GetDataBuffer(Cursor* cur, Py_ssize_t iCol)
 }
 #endif
 
-static PyObject* GetDataDecimal(Cursor* cur, Py_ssize_t iCol)
+static PyObject* GetDataDecimalW(Cursor* cur, Py_ssize_t iCol)
 {
     // The SQL_NUMERIC_STRUCT support is hopeless (SQL Server ignores scale on input parameters and output columns,
     // Oracle does something else weird, and many drivers don't support it at all), so we'll rely on the Decimal's
@@ -477,7 +488,11 @@ static PyObject* GetDataDecimal(Cursor* cur, Py_ssize_t iCol)
     //
     // We are assuming that the decimal point and digits fit within the size of ODBCCHAR.
 
-    int cch = (int)(cbFetched / ODBCCHAR_SIZE);
+    int cch;
+    if (!cur->cnxn->use_ascii_api)
+        cch = (int)(cbFetched / ODBCCHAR_SIZE);
+    else
+        cch = (int) cbFetched;
 
     char ascii[buffsize];
     size_t asciilen = 0;
@@ -532,6 +547,110 @@ static PyObject* GetDataDecimal(Cursor* cur, Py_ssize_t iCol)
 #endif
 
     return PyObject_CallFunction(decimal_type, "O", str.Get());
+}
+
+
+static PyObject* GetDataDecimalA(Cursor* cur, Py_ssize_t iCol)
+{
+    // The SQL_NUMERIC_STRUCT support is hopeless (SQL Server ignores scale on input parameters and output columns,
+    // Oracle does something else weird, and many drivers don't support it at all), so we'll rely on the Decimal's
+    // string parsing.  Unfortunately, the Decimal author does not pay attention to the locale, so we have to modify
+    // the string ourselves.
+    //
+    // Oracle inserts group separators (commas in US, periods in some countries), so leave room for that too.
+    //
+    // Some databases support a 'money' type which also inserts currency symbols.  Since we don't want to keep track of
+    // all these, we'll ignore all characters we don't recognize.  We will look for digits, negative sign (which I hope
+    // is universal), and a decimal point ('.' or ',' usually).  We'll do everything as Unicode in case currencies,
+    // etc. are too far out.
+
+    // TODO: Is Unicode a good idea for Python 2.7?  We need to know which drivers support Unicode.
+
+    const int buffsize = 100;
+    char buffer[buffsize];
+    SQLLEN cbFetched = 0; // Note: will not include the NULL terminator.
+
+    SQLRETURN ret;
+    Py_BEGIN_ALLOW_THREADS
+    ret = SQLGetData(cur->hstmt, (SQLUSMALLINT)(iCol+1), SQL_C_CHAR, buffer, sizeof(buffer), &cbFetched);
+    Py_END_ALLOW_THREADS
+    if (!SQL_SUCCEEDED(ret))
+        return RaiseErrorFromHandle("SQLGetData", cur->cnxn->hdbc, cur->hstmt);
+
+    if (cbFetched == SQL_NULL_DATA || cbFetched > (buffsize * ODBCCHAR_SIZE))
+        Py_RETURN_NONE;
+
+    // Remove non-digits and convert the databases decimal to a '.' (required by decimal ctor).
+    //
+    // We are assuming that the decimal point and digits fit within the size of ODBCCHAR.
+    // We are expecting to receive only single byte encoded code point here
+
+    char ascii[buffsize];
+    size_t asciilen = 0;
+    for (int i = 0; i < cbFetched; i++)
+    {
+        if (buffer[i] == chDecimal)
+        {
+            // Must force it to use '.' since the Decimal class doesn't pay attention to the locale.
+            ascii[asciilen++] = '.';
+        }
+        else if (buffer[i] > 0xFF || ((buffer[i] < '0' || buffer[i] > '9') && buffer[i] != '-'))
+        {
+            // We are expecting only digits, '.', and '-'.  This could be a
+            // Unicode currency symbol or group separator (',').  Ignore.
+        }
+        else
+        {
+            ascii[asciilen++] = buffer[i];
+        }
+    }
+
+    ascii[asciilen] = 0;
+
+    /*
+    for (int i = (cch - 1); i >= 0; i--)
+    {
+        if (buffer[i] == chDecimal)
+        {
+            // Must force it to use '.' since the Decimal class doesn't pay attention to the locale.
+            buffer[i] = '.';
+        }
+        else if ((buffer[i] < '0' || buffer[i] > '9') && buffer[i] != '-')
+        {
+            memmove(&buffer[i], &buffer[i] + 1, (cch - i) * (size_t)ODBCCHAR_SIZE);
+            cch--;
+        }
+    }
+
+    I(buffer[cch] == 0);
+
+    Object str(PyUnicode_FromSQLWCHAR((const SQLWCHAR*)buffer, cch));
+    if (!str)
+        return 0;
+    */
+    Object str;
+
+#if PY_MAJOR_VERSION < 3
+    str.Attach(PyString_FromStringAndSize(ascii, (Py_ssize_t)asciilen));
+#else
+    // This treats the string like UTF-8 which is fine for a reall ASCII string.
+    str.Attach(PyString_FromStringAndSize(ascii, (Py_ssize_t)asciilen));
+#endif
+
+    return PyObject_CallFunction(decimal_type, "O", str.Get());
+}
+
+
+static PyObject* GetDataDecimal(Cursor* cur, Py_ssize_t iCol)
+{
+    if (!cur->cnxn->use_ascii_api)
+    {
+        return GetDataDecimalW(cur, iCol);
+    }
+    else
+    {
+        return GetDataDecimalA(cur, iCol);
+    }
 }
 
 

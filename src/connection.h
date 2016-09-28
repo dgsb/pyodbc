@@ -41,9 +41,12 @@ struct Connection
     int datetime_precision;
 
 #if PY_MAJOR_VERSION < 3
-    bool unicode_results;
     // If true, ANSI columns are returned as Unicode.
+    bool unicode_results;
 #endif
+
+    // If true, this module will the non-wide of odbc
+    bool use_ascii_api;
 
     // The connection timeout in seconds.
     long timeout;
@@ -80,7 +83,9 @@ struct Connection
  * Used by the module's connect function to create new connection objects.  If unable to connect to the database, an
  * exception is set and zero is returned.
  */
-PyObject* Connection_New(PyObject* pConnectString, bool fAutoCommit, bool fAnsi, bool fUnicodeResults, long timeout, bool fReadOnly,
+PyObject* Connection_New(PyObject* pConnectString, bool fAutoCommit,
+                         bool fAnsi, bool fUnicodeResults, long timeout,
+                         bool fReadOnly, bool fAsciiApi,
                          PyObject* attrs_before);
 
 /*
