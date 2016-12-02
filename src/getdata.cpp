@@ -133,7 +133,7 @@ public:
             else if (dataType == SQL_C_CHAR && utf8_char)
             {
                 bufferOwner = PyUnicode_FromStringAndSize(0, newSize);
-                buffer      = PyUnicode_DATA(bufferOwner);
+                buffer      = reinterpret_cast<char*>(PyUnicode_DATA(bufferOwner));
             }
             else if (dataType == SQL_C_BINARY)
             {

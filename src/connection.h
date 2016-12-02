@@ -45,7 +45,7 @@ struct Connection
     bool unicode_results;
 #endif
 
-    // If true, this module will the non-wide of odbc
+    // If true, this module will use the non-wide API of odbc
     bool use_ascii_api;
 
     // The connection timeout in seconds.
